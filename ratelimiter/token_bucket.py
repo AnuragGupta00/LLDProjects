@@ -3,6 +3,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 import random
+import concurrent.futures
 
 class TokenBucket:
     def __init__(self, initial_capacity, refill_rate_time=3, ttl=10):
@@ -50,35 +51,46 @@ class TokenBucket:
         print(f"Shutting down re-filler thread")
 
 
-
+    # multithreaded requests can be handled now
     def throttle(self, request):
         request_id = request["id"]
         last_accessed_time = request["time"]
-
-        if request_id not in self.bucket:
-            self.bucket[request_id] = self.initial_capacity
+        thread_id = request["threadId"]
+        with self.bucket_lock:  #necessary for multithreaded request.
+            if request_id not in self.bucket:
+                self.bucket[request_id] = self.initial_capacity
+                self.last_accessed[request_id] = last_accessed_time
             self.last_accessed[request_id] = last_accessed_time
-        self.last_accessed[request_id] = last_accessed_time
-        if self.bucket[request_id] <= 0:
-            return f"{request_id} -> {self.throttled}"
-
-        with self.bucket_lock:
-           self.bucket[request_id] -= 1
+            if self.bucket[request_id] <= 0:
+                return f"{request_id}-{thread_id} -> {self.throttled}"
+            self.bucket[request_id] -= 1
 
         data = request["data"]
-        return f"{request_id} -> {str(data + str(len(data)))}"
+        return f"{request_id}-{thread_id} -> {str(data + str(len(data)))}"
 
 
 def create_request():
-    request = {"id": random.randint(1,7), "data": "Anurag", "time": datetime.now()}
+    thread_id = threading.current_thread().ident
+    request = {"id": random.randint(1,5), "data": "Anurag", "time": datetime.now(), "threadId": thread_id}
     return request
 
 
+def execute_requests(limiter):
+    request = create_request()
+    response = limiter.throttle(request)
+    print(response)
+    time.sleep(1)
+    return response
+
+
 if __name__ == "__main__":
+    print(f"Main thread id: {threading.current_thread().ident}")
     limiter = TokenBucket(initial_capacity=2, refill_rate_time=5)
     try:
-        while True:
-            print(limiter.throttle(create_request()))
-            time.sleep(0.5)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as threadpool:
+            while True:
+                threadpool.submit(execute_requests, limiter)
+
+                time.sleep(0.1)
     except KeyboardInterrupt:
         limiter.shutdown()
